@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -45,12 +46,36 @@ int main(int argc, char* argv[])
   }
 
   /**
+   * Create timer
+   */
+
+  int tfd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+  if (tfd < 0) {
+    LOG(ERROR) << "failed to create timer file descriptor error=(" << std::strerror(errno) << ")";
+    ::close(fd);
+    return EXIT_FAILURE;
+  }
+
+  struct itimerspec timerspec;
+  memset(&timerspec, 0, sizeof(timerspec));
+  timerspec.it_value.tv_sec = 0;
+  timerspec.it_value.tv_nsec = 1;
+  timerspec.it_interval.tv_sec = 5;
+  if (::timerfd_settime(tfd, 0, &timerspec, nullptr) != 0) {
+    LOG(ERROR) << "failed to set timer error=(" << std::strerror(errno) << ")";
+    ::close(tfd);
+    ::close(fd);
+    return EXIT_FAILURE;
+  }
+
+  /**
    * Initialize epoll
    */
 
   int efd = ::epoll_create(1);
-  if (efd == -1) {
+  if (efd < 0) {
     LOG(ERROR) << "failed to create epoll file descriptor error=(" << std::strerror(errno) << ")";
+    ::close(tfd);
     ::close(fd);
     return EXIT_FAILURE;
   }
@@ -60,8 +85,17 @@ int main(int argc, char* argv[])
   event.data.fd = fd;
   if (::epoll_ctl(efd, EPOLL_CTL_ADD, fd, &event)) {
     LOG(ERROR) << "failed to add serial port to epoll error=(" << std::strerror(errno) << ")";
-    ::close(fd);
     ::close(efd);
+    ::close(tfd);
+    ::close(fd);
+    return EXIT_FAILURE;
+  }
+  event.data.fd = tfd;
+  if (::epoll_ctl(efd, EPOLL_CTL_ADD, tfd, &event)) {
+    LOG(ERROR) << "failed to add timer to epoll error=(" << std::strerror(errno) << ")";
+    ::close(efd);
+    ::close(tfd);
+    ::close(fd);
     return EXIT_FAILURE;
   }
 
@@ -75,29 +109,50 @@ int main(int argc, char* argv[])
       LOG(INFO) << "timeout";
 
     for (int i = 0; i < n; ++i) {
-      if (events[i].data.fd != fd) {
+      // Serial port
+      if (events[i].data.fd == fd) {
+        uint8_t buf[1024];
+        memset(&buf, 0, sizeof(buf));
+        int r = ::read(fd, buf, sizeof(buf));
+        if (r < 0) {
+          if (errno = EAGAIN)
+            continue;
+          LOG(ERROR) << "read error=(" << std::strerror(errno) << ")";
+          break;
+        }
+        if (r == 0) {
+          LOG(ERROR) << "zero bytes read";
+          break;
+        }
+
+        char hexString[1024];
+        bzero(hexString, sizeof(hexString));
+        for (int j = 0; j < r; ++j)
+          snprintf(hexString, sizeof(hexString), "%02x", buf[j]);
+        LOG(INFO) << "read bytes len=" << r << " data=(" << hexString << ")";
+      }
+
+      // Timer
+      else if (events[i].data.fd == tfd) {
+        uint64_t expirations;
+        if (::read(tfd, &expirations, sizeof(expirations)) < 0) {
+          LOG(ERROR) << "read error=(" << std::strerror(errno) << ")";
+          break;
+        }
+        LOG(INFO) << "timer fired";
+        // Write query all command to thermo-scan device
+        uint8_t send[] = {0x80, 0x8f};
+        if (::write(fd, &send, 2) < 0) {
+          LOG(ERROR) << "write error=(" << std::strerror(errno) << ")";
+          break;
+        }
+      }
+
+      // Invalid
+      else {
         LOG(ERROR) << "invalid fd=" << events[i].data.fd;
         break;
       }
-
-      uint8_t buf[1024];
-      memset(&buf, 0, sizeof(buf));
-      int r = ::read(fd, buf, sizeof(buf));
-      if (r < 0) {
-        if (errno = EAGAIN)
-          continue;
-        LOG(ERROR) << "read error=(" << std::strerror(errno) << ")";
-        break;
-      }
-      if (r == 0) {
-        LOG(ERROR) << "zero bytes read";
-        break;
-      }
-
-      LOG(INFO) << "read bytes len=" << r << " data=(";
-      for (int j = 0; j < r; ++j)
-        printf("%2X", buf[j]);
-      printf("\n)\n");
     }
   }
 
@@ -107,6 +162,10 @@ int main(int argc, char* argv[])
 
   if(::close(efd)) {
     LOG(ERROR) << "failed to close epoll file descriptor error=(" << std::strerror(errno) << ")";
+    return EXIT_FAILURE;
+  }
+  if(::close(tfd)) {
+    LOG(ERROR) << "failed to close timer file descriptor error=(" << std::strerror(errno) << ")";
     return EXIT_FAILURE;
   }
   if(::close(fd)) {

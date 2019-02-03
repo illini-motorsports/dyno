@@ -7,6 +7,9 @@
 #include <sys/timerfd.h>
 #include <termios.h>
 #include <unistd.h>
+#include <vector>
+
+#define TEMP_POLL_SEC 2
 
 static const char* ttyName = "/dev/ttyUSB0";
 
@@ -60,7 +63,7 @@ int main(int argc, char* argv[])
   memset(&timerspec, 0, sizeof(timerspec));
   timerspec.it_value.tv_sec = 0;
   timerspec.it_value.tv_nsec = 1;
-  timerspec.it_interval.tv_sec = 5;
+  timerspec.it_interval.tv_sec = TEMP_POLL_SEC;
   if (::timerfd_settime(tfd, 0, &timerspec, nullptr) != 0) {
     LOG(ERROR) << "failed to set timer error=(" << std::strerror(errno) << ")";
     ::close(tfd);
@@ -103,6 +106,8 @@ int main(int argc, char* argv[])
    * Event loop
    */
 
+  std::vector<uint8_t> _recvBuf;
+
   for (;;) {
     int n = ::epoll_wait(efd, events, 5, 10000);
     if (n == 0)
@@ -114,22 +119,25 @@ int main(int argc, char* argv[])
         uint8_t buf[1024];
         memset(&buf, 0, sizeof(buf));
         int r = ::read(fd, buf, sizeof(buf));
-        if (r < 0) {
+        if (r <= 0) {
           if (errno = EAGAIN)
             continue;
           LOG(ERROR) << "read error=(" << std::strerror(errno) << ")";
           break;
         }
-        if (r == 0) {
-          LOG(ERROR) << "zero bytes read";
-          break;
-        }
 
-        char hexString[1024];
-        bzero(hexString, sizeof(hexString));
         for (int j = 0; j < r; ++j)
-          snprintf(hexString, sizeof(hexString), "%02x", buf[j]);
-        LOG(INFO) << "read bytes len=" << r << " data=(" << hexString << ")";
+          _recvBuf.push_back(buf[j]);
+
+        if (_recvBuf.size() >= 28) {
+          for (int j = 0; j < 14; ++j) {
+            uint16_t val = ((uint16_t)_recvBuf[2*j] << 8) | _recvBuf[2*j+1];
+            LOG(INFO) << "received temperature"
+                      << " channel=" << j+1
+                      << " temp=" << (val == 32767 ? "NaN" : std::to_string(val));
+          }
+          _recvBuf.erase(_recvBuf.begin(), _recvBuf.begin() + 28);
+        }
       }
 
       // Timer

@@ -1,7 +1,10 @@
 #include "Log.hpp"
 
+#include <cassert>
+#include <cmath>
 #include <cstring>
 #include <functional>
+#include <fstream>
 #include <vector>
 
 #include <errno.h>
@@ -233,31 +236,115 @@ class SerialPort : public IEventReader {
     std::function<void(std::vector<uint8_t>&)> _callback;
 };
 
+class CsvLogger {
+  public:
+    CsvLogger() {
+      std::ostringstream str;
+      std::time_t t = std::time(0);
+      str << "dynologger-" << std::put_time(std::localtime(&t), "%Y-%m-%d::%H:%M:%S") << ".csv";
+      const std::string outfileName = str.str();
+
+      LOG(INFO) << "opening output csv file name=" << outfileName;
+      _outstream.open(outfileName);
+      if (!_outstream.is_open()) {
+        LOG(ERROR) << "failed to open output file error=(" << std::strerror(errno) << ")";
+        throw std::runtime_error("");
+      }
+      _outstream << std::fixed << std::setprecision(6);
+
+      _timeIdx = addDataVal("xtime", "s");
+    };
+    ~CsvLogger() {
+      if (_outstream.is_open()) {
+        LOG(INFO) << "closing output file";
+        _outstream.close();
+      }
+    }
+
+    unsigned addDataVal(const std::string& name, const std::string& units) {
+      _data.push_back({});
+      _data.back()._name = name;
+      _data.back()._units = units;
+      _data.back()._latestVal = NAN;
+      return _data.size() - 1;
+    }
+
+    void updateVal(const unsigned idx, const double newVal) {
+      if (idx >= _data.size())
+        return;
+      _data[idx]._latestVal = newVal;
+    }
+
+    void writeHeader() {
+      bool isFirst = true;
+      for (const auto& val : _data) {
+        _outstream << (isFirst ? "" : " ") << val._name << " [" << val._units << "]";
+        isFirst =  false;
+      }
+      _outstream << "\n";
+      _outstream.flush();
+    }
+
+    void writeLine() {
+      struct timeval tv;
+      ::gettimeofday(&tv, nullptr);
+      const double now = tv.tv_sec + (double(tv.tv_usec) * 1e-6);
+      updateVal(_timeIdx, now);
+
+      bool isFirst = true;
+      for (const auto& val : _data) {
+        _outstream << (isFirst ? "" : ",") << val._latestVal;
+        isFirst =  false;
+      }
+      _outstream << "\n";
+      _outstream.flush();
+    }
+
+  private:
+    struct DataVal {
+      std::string _name;
+      std::string _units;
+      double _latestVal;
+    };
+
+    std::ofstream _outstream;
+    std::vector<DataVal> _data;
+    unsigned _timeIdx;
+};
+
 int main(int argc, char* argv[])
 {
+  unsigned _firstTempIdx = 0;
+
   std::unique_ptr<EventLoop> _eventLoop;
   std::unique_ptr<SerialPort> _tempPort;
   std::unique_ptr<Timer> _tempTimer;
+  std::unique_ptr<CsvLogger> _csv;
+
   try {
     _eventLoop.reset(new EventLoop());
-    _tempPort.reset(new SerialPort(TEMP_TTY, B38400, [] (std::vector<uint8_t>& buf) {
+
+    _tempPort.reset(new SerialPort(TEMP_TTY, B38400, [&] (std::vector<uint8_t>& buf) {
       if (buf.size() >= 28) {
+        assert(_firstTempIdx != 0);
         for (int j = 0; j < 14; ++j) {
           uint16_t val = ((uint16_t)buf[2*j] << 8) | buf[2*j+1];
-          LOG(INFO) << "received temperature"
-                    << " channel=" << j+1
-                    << " temp=" << (val == 32767 ? "NaN" : std::to_string(val));
+          double temp = (val == 32767 ? NAN : val);
+          _csv->updateVal(_firstTempIdx + j, temp);
         }
         buf.erase(buf.begin(), buf.begin() + 28);
+        _csv->writeLine();
       }
     }));
+
     _tempTimer.reset(new Timer(TEMP_POLL_SEC, [&_tempPort] () {
       // Write query all command to thermo-scan device
       uint8_t send[] = {0x80, 0x8f};
-      LOG(INFO) << "sending query-all command to temp reader";
       if (::write(_tempPort->getFd(), &send, sizeof(send)) < 0)
         LOG(ERROR) << "write error=(" << std::strerror(errno) << ")";
     }));
+
+    _csv.reset(new CsvLogger());
   } catch (std::runtime_error) {
     return EXIT_FAILURE;
   }
@@ -265,8 +352,20 @@ int main(int argc, char* argv[])
   if (!_eventLoop->addReader(_tempPort.get()) || !_eventLoop->addReader(_tempTimer.get()))
     return EXIT_FAILURE;
 
+  for (int j = 0; j < 14; ++j) {
+    std::string name = "Temp" + std::to_string(j+1);
+    static std::string units = "C";
+    if (j == 0)
+      _firstTempIdx = _csv->addDataVal(name, units);
+    else
+      _csv->addDataVal(name, units);
+  }
+
+  _csv->writeHeader();
+
   int ret = _eventLoop->run();
 
+  _csv.reset(nullptr);
   _tempTimer.reset(nullptr);
   _tempPort.reset(nullptr);
   _eventLoop.reset(nullptr);

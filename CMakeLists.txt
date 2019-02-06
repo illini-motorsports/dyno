@@ -8,5 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(SOURCES main.cpp)
+set(HEADERS Log.hpp EventLoop.hpp CsvLogger.hpp Timer.hpp)
 
 ADD_EXECUTABLE(dyno ${SOURCES})

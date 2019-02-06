@@ -14,3 +14,8 @@
 - This tool outputs a CSV file named `dynologger-<datetime>.csv`.
 - This file is output in WinDarab CSV format. You can use the ASCII import feature of WinDarab to convert this file to a `.bmsbin` file and then open that in WinDarab for analysis.
 - If you want, you can also just open it up in Excel or something (but don't to that)
+
+### Note to Windows Users
+- You can mostly likely get all this to build & run using cygwin.
+- Windows Subsytem for Linux *may* work, but I haven't tested it.
+- Another option is to install a linux virtual machine with something like VirtualBox.

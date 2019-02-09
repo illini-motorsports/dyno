@@ -108,7 +108,7 @@ class DynLoc : public ISerialPort {
       , _csv(csv)
     {
       _speedIdx = _csv->addDataChannel("Dyno Speed", "rpm", 0);
-      _torqueIdx = _csv->addDataChannel("Torque", "ft-lb", 2);
+      _torqueIdx = _csv->addDataChannel("Torque", "ft-lb", 1);
 
       LOG(INFO) << "writing BREAK to dynloc";
       write(BREAK);
@@ -136,11 +136,13 @@ class DynLoc : public ISerialPort {
     // Write the string sequence to the serial port
     template<size_t len>
     void write(const char (&data) [len]) {
-      if (::write(_port.getFd(), data, len - 1) < 0)
-        LOG(ERROR) << "write error=(" << std::strerror(errno) << ")";
+      int n;
+      if ((n = ::write(_port.getFd(), data, len - 1)) < len - 1)
+        LOG(ERROR) << "write error n=" << n << " error=(" << std::strerror(errno) << ")";
     }
 
     // Parse responses from the DYN-LOC IV
+    //TODO: Start deadman timer, send break if response not received after too long
     void consume(std::vector<uint8_t>& data) override {
       // Strip off any unnecessary sequences
       while (checkAndErase(data, BREAK_ECHO) || checkAndErase(data, CRLF));
@@ -187,7 +189,12 @@ class DynLoc : public ISerialPort {
             for (int i = 0; i < data.size() - 3; ++i)
               ::sprintf(ascii + i, "%c", data[i]);
 
-            LOG(INFO) << "have torque=(" << ascii << ")";
+            try {
+              _csv->updateVal(_torqueIdx, std::stod(ascii));
+              _csv->writeLine();
+            } catch (std::invalid_argument e) {
+              LOG(ERROR) << "invalid torque string error=(" << e.what() << ") string=(" << ascii << ")";
+            }
 
             write(REQ_SP);
             _reqState = RequestState::SPEED;
@@ -199,7 +206,12 @@ class DynLoc : public ISerialPort {
             for (int i = 0; i < data.size() - 3; ++i)
               ::sprintf(ascii + i, "%c", data[i]);
 
-            LOG(INFO) << "have speed=(" << ascii << ")";
+            try {
+              _csv->updateVal(_speedIdx, std::stod(ascii));
+              _csv->writeLine();
+            } catch (std::invalid_argument e) {
+              LOG(ERROR) << "invalid speed string error=(" << e.what() << ") string=(" << ascii << ")";
+            }
 
             write(REQ_TQ);
             _reqState = RequestState::TORQUE;

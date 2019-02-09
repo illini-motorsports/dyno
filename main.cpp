@@ -4,6 +4,8 @@
 #include "Timer.hpp"
 #include "SerialPort.hpp"
 
+#include <algorithm>
+
 #include <assert.h>
 #include <getopt.h>
 
@@ -90,6 +92,16 @@ class DynLoc : public ISerialPort {
    * DLC DR RPM
    */
 
+  #define BREAK "\x03"
+  #define SYS_OPEN "SYS OPEN\x0d"
+  #define SYS_ECHO_OFF "SYS ECHO OFF\x0d"
+  #define SYS_CLOSE "SYS CLOSE\x0d"
+  #define REQ_TQ "DLC DR TQ\x0d"
+  #define REQ_SP "DLC DR RPM\x0d"
+  #define CRLF "\x0d\x0a"
+  #define PROMPT "\\"
+  #define BREAK_ECHO "\x5e\x43"
+
   public:
     DynLoc(const char* ttyName, CsvLogger* csv)
       : _port(SerialConfig(ttyName,  B19200, true), this)
@@ -97,29 +109,126 @@ class DynLoc : public ISerialPort {
     {
       _speedIdx = _csv->addDataChannel("Dyno Speed", "rpm", 0);
       _torqueIdx = _csv->addDataChannel("Torque", "ft-lb", 2);
+
+      LOG(INFO) << "writing BREAK to dynloc";
+      write(BREAK);
     }
     ~DynLoc() {}
 
-    void consume(std::vector<uint8_t>& data) override {
-      char ascii[4096];
-      bzero(ascii, sizeof(ascii));
-      char hexString[4096];
-      bzero(hexString, sizeof(hexString));
-      for (int i = 0; i < data.size(); ++i) {
-        ::sprintf(&(hexString[2*i]), "%02x", data[i]);
-        ::sprintf(&(ascii[i]), "%c", data[i]);
-      }
-      data.clear();
-      LOG(INFO) << "received DYN-LOC data=(" << hexString << ") ascii=(" <<  ascii << ")";
+    IEventReader* getReader() { return &_port; }
+
+    // Check the beginning of the buffer for a string sequence
+    template<size_t strLen>
+    bool startsWith(const std::vector<uint8_t>& data, const char (&tag) [strLen]) {
+      return data.size() >= strLen - 1 && ::memcmp(data.data(), tag, strLen - 1) == 0;
     }
 
-    IEventReader* getReader() { return &_port; }
+    // Check the beginning of the buffer for a string sequence and consume it
+    template<size_t strLen>
+    bool checkAndErase(std::vector<uint8_t>& data, const char (&tag) [strLen]) {
+      if (data.size() >= strLen - 1 && ::memcmp(data.data(), tag, strLen - 1) == 0) {
+        data.erase(data.begin(), data.begin() + strLen - 1);
+        return true;
+      }
+      return false;
+    }
+
+    // Write the string sequence to the serial port
+    template<size_t len>
+    void write(const char (&data) [len]) {
+      if (::write(_port.getFd(), data, len - 1) < 0)
+        LOG(ERROR) << "write error=(" << std::strerror(errno) << ")";
+    }
+
+    // Parse responses from the DYN-LOC IV
+    void consume(std::vector<uint8_t>& data) override {
+      // Strip off any unnecessary sequences
+      while (checkAndErase(data, BREAK_ECHO) || checkAndErase(data, CRLF));
+
+      while (!data.empty()) {
+        // See if we have a complete line yet (contains the prompt)
+        auto eol = std::find(data.begin(), data.end(), *PROMPT);
+        if (eol == data.end())
+          return;
+
+        // Empty prompt
+        if (data.front() == *PROMPT) {
+          if (!_sentOpen) {
+            LOG(INFO) << "received empty prompt from dynloc, writing SYS OPEN";
+            write(SYS_OPEN);
+            _sentOpen = true;
+          } else {
+            LOG(INFO) << "received empty prompt from dynloc, writing SYS CLOSE";
+            write(SYS_CLOSE);
+          }
+        }
+
+        // Open response
+        else if (startsWith(data, "sys open" CRLF PROMPT)) {
+          LOG(INFO) << "received sys opened from dynloc, writing ECHO OFF";
+          write(SYS_ECHO_OFF);
+        }
+
+        // Close response
+        else if (startsWith(data, "sys closed" CRLF PROMPT)) {
+          LOG(INFO) << "received sys closed from dynloc, starting data loop";
+          write(REQ_TQ);
+          _reqState = RequestState::TORQUE;
+        }
+
+        // Data loop responses
+        else {
+          char ascii[64];
+          bzero(ascii, sizeof(ascii));
+
+          // Torque response
+          if (_reqState == RequestState::TORQUE &&
+              (data.size() > 3 && ::memcmp(&(*eol) - 2, CRLF PROMPT, 3) == 0)) {
+            for (int i = 0; i < data.size() - 3; ++i)
+              ::sprintf(ascii + i, "%c", data[i]);
+
+            LOG(INFO) << "have torque=(" << ascii << ")";
+
+            write(REQ_SP);
+            _reqState = RequestState::SPEED;
+          }
+
+          // Speed response
+          else if (_reqState == RequestState::SPEED &&
+                   (data.size() > 3 && ::memcmp(&(*eol) - 2, CRLF PROMPT, 3) == 0)) {
+            for (int i = 0; i < data.size() - 3; ++i)
+              ::sprintf(ascii + i, "%c", data[i]);
+
+            LOG(INFO) << "have speed=(" << ascii << ")";
+
+            write(REQ_TQ);
+            _reqState = RequestState::TORQUE;
+          }
+
+          // Error
+          else {
+            LOG(ERROR) << "unhandled message";
+          }
+        }
+
+        data.erase(data.begin(), eol + 1); // Clear the consumed line
+      }
+    }
 
   private:
     SerialPort _port;
     CsvLogger* _csv;
     unsigned _speedIdx = 0;
     unsigned _torqueIdx = 0;
+
+    bool _sentOpen = false;
+
+    enum class RequestState {
+      NONE = 0,
+      TORQUE = 1,
+      SPEED = 2,
+    };
+    RequestState _reqState = RequestState::NONE;
 };
 
 int main(int argc, char* argv[])

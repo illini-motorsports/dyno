@@ -4,12 +4,26 @@
 #include "Timer.hpp"
 #include "SerialPort.hpp"
 
-#include <cassert>
-#include <vector>
+#include <assert.h>
+#include <getopt.h>
 
-#define TEMP_TTY "/dev/ttyUSB1"
-#define TEMP_POLL_NSEC 500000000L // 0.5s
-#define DYN_TTY "/dev/ttyUSB0"
+void usage() {
+  using namespace std;
+  cout << "USAGE: dyno-logger" << endl;
+  cout << "Data acquisition tool for logging all dyno data in a single CSV file" << endl;
+  cout << endl;
+  cout << "ARGUMENTS" << endl;
+  cout << "  -d, --dynloc-port [TTY]     Name of the serial port for the DYN-LOC IV" << endl;
+  cout << "  -t, --thermo-port [TTY]     Name of the serial port for the ETAS Thermo-Scan" << endl;
+  cout << "  -T, --thermo-poll [msec]    Polling interval for the Thermo-Scan (in milliseconds)" << endl;
+  cout << "                                - Defaults to 500ms" << endl;
+  cout << "  -h, --help                  Output this help text" << endl;
+  cout << endl;
+  cout << "NOTES" << endl;
+  cout << "  - The logger will only connect to the devices for which you specify" << endl;
+  cout << "    tty / serial port names. You can connect to all of them or only" << endl;
+  cout << "    some of them, but you must connect to at least one." << endl;
+}
 
 // Handles reading temps from the ETAS Thermo-Scan thermocouple reader
 class ThermoScan : public ISerialPort {
@@ -110,10 +124,50 @@ class DynLoc : public ISerialPort {
 
 int main(int argc, char* argv[])
 {
+  std::string dynlocPort;
+  std::string thermoPort;
+  unsigned thermoPollMs = 500;
+
+  const char* optstring = "d:t:T:h";
+  struct option options[] = {
+    {"dynloc-port", required_argument, 0, 'd'},
+    {"thermo-port", required_argument, 0, 't'},
+    {"thermo-poll", required_argument, 0, 'T'},
+    {"help",        no_argument,       0, 'h'}
+  };
+  char opt;
+  while ((opt = ::getopt_long(argc, argv, optstring, options, nullptr)) != -1) {
+    switch (opt) {
+      case 'd':
+        dynlocPort = optarg;
+        LOG(INFO) << "using dynloc port=(" << dynlocPort << ")";
+        break;
+      case 't':
+        thermoPort = optarg;
+        LOG(INFO) << "using thermo port=(" << thermoPort << ")";
+        break;
+      case 'T':
+        thermoPollMs = ::atoi(optarg);
+        LOG(INFO) << "using thermo poll=(" << thermoPollMs << ")";
+        break;
+      case 'h':
+        usage();
+        return EXIT_SUCCESS;;
+      default:
+        usage();
+        return EXIT_FAILURE;
+    }
+  }
+
+  if (thermoPort.empty() && dynlocPort.empty()) {
+    usage();
+    return EXIT_FAILURE;
+  }
+
   std::unique_ptr<EventLoop> _eventLoop;
   std::unique_ptr<CsvLogger> _csv;
 
-  std::unique_ptr<DynLoc> _dynLoc;
+  std::unique_ptr<DynLoc> _dynloc;
 
   std::unique_ptr<ThermoScan> _thermoScan;
   std::unique_ptr<Timer> _thermoTimer;
@@ -122,19 +176,23 @@ int main(int argc, char* argv[])
     _eventLoop.reset(new EventLoop());
     _csv.reset(new CsvLogger());
 
-    _dynLoc.reset(new DynLoc(DYN_TTY, _csv.get()));
+    if (!dynlocPort.empty()) {
+      _dynloc.reset(new DynLoc(dynlocPort.c_str(), _csv.get()));
+      if (!_eventLoop->addReader(_dynloc->getReader()))
+        return EXIT_FAILURE;
+    }
 
-    _thermoScan.reset(new ThermoScan(TEMP_TTY, _csv.get()));
-    _thermoTimer.reset(new Timer(TEMP_POLL_NSEC, [&_thermoScan] () { _thermoScan->queryTemp(); }));
+    if (!thermoPort.empty()) {
+      _thermoScan.reset(new ThermoScan(thermoPort.c_str(), _csv.get()));
+      _thermoTimer.reset(new Timer(thermoPollMs * 1000000L, [&_thermoScan] () { _thermoScan->queryTemp(); }));
+      if (!_eventLoop->addReader(_thermoScan->getReader()) ||
+          !_eventLoop->addReader(_thermoTimer.get()))
+        return EXIT_FAILURE;
+    }
   }
   catch (std::runtime_error) {
     return EXIT_FAILURE;
   }
-
-  if (! _eventLoop->addReader(_dynLoc->getReader()) ||
-      ! _eventLoop->addReader(_thermoScan->getReader()) ||
-      ! _eventLoop->addReader(_thermoTimer.get()))
-    return EXIT_FAILURE;
 
   _csv->writeHeader();
 
@@ -144,7 +202,7 @@ int main(int argc, char* argv[])
   _thermoTimer.reset(nullptr);
   _thermoScan.reset(nullptr);
 
-  _dynLoc.reset(nullptr);
+  _dynloc.reset(nullptr);
 
   _csv.reset(nullptr);
   _eventLoop.reset(nullptr);

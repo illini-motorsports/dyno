@@ -1,10 +1,28 @@
 # dyno-logger
-> Data acquisition tool for loggging all dyno data in a single CSV file.
+> Data acquisition tool for logging all dyno data in a single CSV file.
 
 ### Building & Running
 - `cmake CMakeLists.txt`
 - `make`
 - `./dyno-logger`
+
+### Usage
+```
+USAGE: dyno-logger
+Data acquisition tool for logging all dyno data in a single CSV file
+
+ARGUMENTS
+  -d, --dynloc-port [TTY]     Name of the serial port for the DYN-LOC IV
+  -t, --thermo-port [TTY]     Name of the serial port for the ETAS Thermo-Scan
+  -T, --thermo-poll [msec]    Polling interval for the Thermo-Scan (in milliseconds)
+                                - Defaults to 500ms
+  -h, --help                  Output this help text
+
+NOTES
+  - The logger will only connect to the devices for which you specify
+    tty / serial port names. You can connect to all of them or only
+    some of them, but you must connect to at least one.
+```
 
 ### Options
 - You will need to configure which serial port to connect to. Currently this is done by changing the `TEMP_TTY` `#define` statement at the top of `main.cpp`. We can make this better later...

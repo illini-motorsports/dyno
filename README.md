@@ -1,10 +1,10 @@
-# dyno
+# dyno-logger
 > Data acquisition tool for loggging all dyno data in a single CSV file.
 
 ### Building & Running
 - `cmake CMakeLists.txt`
 - `make`
-- `./dyno`
+- `./dyno-logger`
 
 ### Options
 - You will need to configure which serial port to connect to. Currently this is done by changing the `TEMP_TTY` `#define` statement at the top of `main.cpp`. We can make this better later...

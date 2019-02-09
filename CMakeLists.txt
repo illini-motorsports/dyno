@@ -1,6 +1,6 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.5.0)
 
-PROJECT(dyno)
+PROJECT(dyno-logger)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_COMPILER g++)
@@ -10,4 +10,4 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(SOURCES main.cpp)
 set(HEADERS Log.hpp EventLoop.hpp CsvLogger.hpp Timer.hpp)
 
-ADD_EXECUTABLE(dyno ${SOURCES})
+ADD_EXECUTABLE(dyno-logger ${SOURCES})

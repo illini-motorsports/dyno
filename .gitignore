@@ -2,5 +2,5 @@ CMakeFiles
 CMakeCache.txt
 cmake_install.cmake
 Makefile
-dyno
+dyno-logger
 *.csv

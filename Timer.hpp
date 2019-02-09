@@ -18,10 +18,7 @@ class Timer : public IEventReader {
     Timer& operator=(Timer&& o) = delete;
 
     void read() override;
-
-    int getFd() override {
-      return _fd;
-    }
+    int getFd() override { return _fd; }
 
   private:
 

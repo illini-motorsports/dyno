@@ -20,6 +20,8 @@ class Timer : public IEventReader {
     void read() override;
     int getFd() override { return _fd; }
 
+    static int64_t getTime();
+
   private:
 
     int _fd = -1;
@@ -67,4 +69,11 @@ inline void Timer::read()
   }
 
   _callback();
+}
+
+inline int64_t Timer::getTime()
+{
+  static struct timeval val;
+  ::gettimeofday(&val, nullptr);
+  return (val.tv_sec * 1000000000L) + (val.tv_usec * 1000L);
 }

@@ -141,8 +141,18 @@ class DynLoc : public ISerialPort {
         LOG(ERROR) << "write error n=" << n << " error=(" << std::strerror(errno) << ")";
     }
 
+    // Periodically check whether we need to re-request data
+    void checkTimeout() {
+      if (_reqState == RequestState::NONE)
+        return;
+      const auto now = Timer::getTime();
+      if (now - _lastRecv >= 500000000L) { // 0.5s
+        LOG(WARN) << "response timeout, writing BREAK to dynloc";
+        write(BREAK);
+      }
+    }
+
     // Parse responses from the DYN-LOC IV
-    //TODO: Start deadman timer, send break if response not received after too long
     void consume(std::vector<uint8_t>& data) override {
       // Strip off any unnecessary sequences
       while (checkAndErase(data, BREAK_ECHO) || checkAndErase(data, CRLF));
@@ -159,9 +169,14 @@ class DynLoc : public ISerialPort {
             LOG(INFO) << "received empty prompt from dynloc, writing SYS OPEN";
             write(SYS_OPEN);
             _sentOpen = true;
-          } else {
+          } else if (!_sentClose) {
             LOG(INFO) << "received empty prompt from dynloc, writing SYS CLOSE";
             write(SYS_CLOSE);
+            _sentClose = true;
+          } else {
+            LOG(INFO) << "received empty prompt from dynloc, restarting data loop";
+            write(REQ_TQ);
+            _reqState = RequestState::TORQUE;
           }
         }
 
@@ -192,6 +207,7 @@ class DynLoc : public ISerialPort {
             try {
               _csv->updateVal(_torqueIdx, std::stod(ascii));
               _csv->writeLine();
+              _lastRecv = Timer::getTime();
             } catch (std::invalid_argument e) {
               LOG(ERROR) << "invalid torque string error=(" << e.what() << ") string=(" << ascii << ")";
             }
@@ -209,6 +225,7 @@ class DynLoc : public ISerialPort {
             try {
               _csv->updateVal(_speedIdx, std::stod(ascii));
               _csv->writeLine();
+              _lastRecv = Timer::getTime();
             } catch (std::invalid_argument e) {
               LOG(ERROR) << "invalid speed string error=(" << e.what() << ") string=(" << ascii << ")";
             }
@@ -228,19 +245,21 @@ class DynLoc : public ISerialPort {
     }
 
   private:
-    SerialPort _port;
-    CsvLogger* _csv;
-    unsigned _speedIdx = 0;
-    unsigned _torqueIdx = 0;
-
-    bool _sentOpen = false;
 
     enum class RequestState {
       NONE = 0,
       TORQUE = 1,
       SPEED = 2,
     };
+
+    SerialPort _port;
+    CsvLogger* _csv;
+    unsigned _speedIdx = 0;
+    unsigned _torqueIdx = 0;
+    bool _sentOpen = false;
+    bool _sentClose = false;
     RequestState _reqState = RequestState::NONE;
+    int64_t _lastRecv = 0;
 };
 
 int main(int argc, char* argv[])
@@ -289,6 +308,7 @@ int main(int argc, char* argv[])
   std::unique_ptr<CsvLogger> _csv;
 
   std::unique_ptr<DynLoc> _dynloc;
+  std::unique_ptr<Timer> _dynlocTimer;
 
   std::unique_ptr<ThermoScan> _thermoScan;
   std::unique_ptr<Timer> _thermoTimer;
@@ -299,7 +319,9 @@ int main(int argc, char* argv[])
 
     if (!dynlocPort.empty()) {
       _dynloc.reset(new DynLoc(dynlocPort.c_str(), _csv.get()));
-      if (!_eventLoop->addReader(_dynloc->getReader()))
+      _dynlocTimer.reset(new Timer(250000000L, [&_dynloc] () { _dynloc->checkTimeout(); }));
+      if (!_eventLoop->addReader(_dynloc->getReader()) ||
+          !_eventLoop->addReader(_dynlocTimer.get()))
         return EXIT_FAILURE;
     }
 

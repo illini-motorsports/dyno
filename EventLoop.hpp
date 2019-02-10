@@ -115,11 +115,13 @@ inline int EventLoop::run()
       if (event.events & EPOLLERR || event.events & EPOLLHUP) {
         LOG(ERROR) << "epoll encountered unknown error";
         ret = EXIT_FAILURE;
+        _running = false;
         break;
       }
       if (!(event.events & EPOLLIN)) {
         LOG(ERROR) << "unhandled epoll event";
         ret = EXIT_FAILURE;
+        _running = false;
         break;
       }
       if (event.data.fd == _sfd) {
